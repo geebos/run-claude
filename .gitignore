@@ -1,0 +1,10 @@
+.cache
+.claude
+.codegraph
+.next
+.pnpm-store
+node_modules
+.mcp.json
+
+.env*
+!.env.example
