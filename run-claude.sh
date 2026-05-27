@@ -55,10 +55,11 @@ docker run --rm -it \
   --user 1000:1000 \
   --security-opt no-new-privileges=false \
   --env-file "$ENV_FILE" \
+  -e PNPM_HOME=/pnpm \
   -v "$PROJECT_DIR:/workspace" \
   -v "$NODE_MODULES_VOL:/workspace/node_modules" \
   -v "$NEXT_VOL:/workspace/.next" \
-  -v "$PNPM_STORE_VOL:/workspace/.pnpm-store" \
+  -v "$PNPM_STORE_VOL:/pnpm/store" \
   -v "$CLAUDE_VOL:/home/node/.claude" \
   -v "$CLAUDE_JSON_FILE:/home/node/.claude.json" \
   -v "$SKILLS_CACHE:/home/node/.claude/skills:ro" \
