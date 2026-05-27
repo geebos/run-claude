@@ -34,7 +34,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sudo \
     rsync \
     go \
+    tzdata \
   && rm -rf /var/lib/apt/lists/*
+
+# 设置时区为 Asia/Shanghai
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # Debian 里的 fd 命令叫 fdfind，补一个 fd 软链接
 RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd

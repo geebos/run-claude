@@ -67,5 +67,15 @@ docker run --rm -it \
   bash -lc '
     set -euo pipefail
 
+    # 配置 git user 和 email（从环境变量读取）
+    if [ -n "${GIT_USER:-}" ]; then
+      git config --global user.name "$GIT_USER"
+      echo "git user.name set to: $GIT_USER"
+    fi
+    if [ -n "${GIT_EMAIL:-}" ]; then
+      git config --global user.email "$GIT_EMAIL"
+      echo "git user.email set to: $GIT_EMAIL"
+    fi
+
     exec claude --dangerously-skip-permissions --system-prompt "Always use sudo when executing shell commands (e.g. npm install, mkdir, rm, chown, etc.). The workspace directories are owned by root so most file operations require sudo."
   '
