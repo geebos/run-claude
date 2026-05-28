@@ -6,21 +6,108 @@ IMAGE_NAME="claude-code-dev"
 PROJECT_DIR="$PWD"
 PROJECT_NAME="$(basename "$PROJECT_DIR")"
 PROJECT_HASH="$(printf '%s' "$PROJECT_DIR" | sha1sum | cut -c1-8)"
+CONTAINER_NAME="claude-code-dev-${PROJECT_NAME}-${PROJECT_HASH}"
+HOST_PORT="3000"
+PORT_SPECIFIED=false
+BIND_PORT=true
+ATTACH_CONTAINER=false
 
 CLAUDE_VOL="claude-code-home-${PROJECT_NAME}-${PROJECT_HASH}"
-NODE_MODULES_VOL="claude-node-modules-${PROJECT_NAME}-${PROJECT_HASH}"
-NEXT_VOL="claude-next-${PROJECT_NAME}-${PROJECT_HASH}"
-PNPM_STORE_VOL="claude-pnpm-store-${PROJECT_NAME}-${PROJECT_HASH}"
 
 SCRIPT_PATH="$(readlink -f "$0")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 CLAUDE_JSON_FILE="$SCRIPT_DIR/.cache/.claude_${PROJECT_HASH}.json"
+TEMPLATE_CLAUDE_JSON_FILE="$SCRIPT_DIR/template_claude.json"
+TEMPLATE_CLAUDE_SETTINGS_FILE="$SCRIPT_DIR/template_claude_settings.json"
 
 ENV_FILE="$SCRIPT_DIR/.env"
 
 SKILLS_SRC="$HOME/.claude/skills"
 SKILLS_REAL="$(readlink -f "$SKILLS_SRC" 2>/dev/null || true)"
-SKILLS_CACHE="$SCRIPT_DIR/.cache/skills"
+
+usage() {
+  cat <<EOF
+Usage: run-claude [-p HOST_PORT] [-n] [-a]
+
+Options:
+  -p HOST_PORT  Host port to bind to container port 3000. Default: 3000
+  -n            Do not bind a host port to container port 3000
+  -a            Open zsh in the current project's running dev container
+  -h            Show this help
+EOF
+}
+
+while getopts ":anp:h" opt; do
+  case "$opt" in
+    a)
+      ATTACH_CONTAINER=true
+      ;;
+    n)
+      BIND_PORT=false
+      ;;
+    p)
+      HOST_PORT="$OPTARG"
+      PORT_SPECIFIED=true
+      ;;
+    h)
+      usage
+      exit 0
+      ;;
+    :)
+      echo "Option -$OPTARG requires an argument"
+      usage
+      exit 1
+      ;;
+    \?)
+      echo "Unknown option: -$OPTARG"
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+shift $((OPTIND - 1))
+
+if [ "$#" -ne 0 ]; then
+  echo "Unexpected arguments: $*"
+  usage
+  exit 1
+fi
+
+if [ "$BIND_PORT" = false ] && [ "$PORT_SPECIFIED" = true ]; then
+  echo "Options -n and -p cannot be used together"
+  usage
+  exit 1
+fi
+
+if [ "$BIND_PORT" = true ]; then
+  case "$HOST_PORT" in
+    ''|*[!0-9]*)
+      echo "Invalid host port: $HOST_PORT"
+      exit 1
+      ;;
+  esac
+
+  if [ "$HOST_PORT" -lt 1 ] || [ "$HOST_PORT" -gt 65535 ]; then
+    echo "Host port must be between 1 and 65535: $HOST_PORT"
+    exit 1
+  fi
+fi
+
+if [ "$ATTACH_CONTAINER" = true ]; then
+  if ! docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    echo "Project container does not exist: $CONTAINER_NAME"
+    echo "Start it first with: run-claude"
+    exit 1
+  fi
+
+  if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME")" != "true" ]; then
+    echo "Project container is not running: $CONTAINER_NAME"
+    exit 1
+  fi
+
+  exec docker exec -it -w /workspace "$CONTAINER_NAME" zsh
+fi
 
 if [ ! -f "$ENV_FILE" ]; then
   echo "Missing env file: $ENV_FILE"
@@ -32,51 +119,43 @@ if [ -z "$SKILLS_REAL" ] || [ ! -d "$SKILLS_REAL" ]; then
   exit 1
 fi
 
-mkdir -p "$SKILLS_CACHE"
+mkdir -p "$(dirname "$CLAUDE_JSON_FILE")"
 
-# 在宿主机解析 ~/.claude/skills 里的软链接，生成真实文件缓存
-if command -v rsync >/dev/null 2>&1; then
-  rsync -aL --delete "$SKILLS_REAL"/ "$SKILLS_CACHE"/
-else
-  rm -rf "$SKILLS_CACHE"
-  mkdir -p "$SKILLS_CACHE"
-  cp -aL "$SKILLS_REAL"/. "$SKILLS_CACHE"/
+if [ ! -s "$CLAUDE_JSON_FILE" ]; then
+  if [ ! -f "$TEMPLATE_CLAUDE_JSON_FILE" ]; then
+    echo "Missing Claude template file: $TEMPLATE_CLAUDE_JSON_FILE"
+    exit 1
+  fi
+
+  cp "$TEMPLATE_CLAUDE_JSON_FILE" "$CLAUDE_JSON_FILE"
 fi
 
-mkdir -p "$(dirname "$CLAUDE_JSON_FILE")"
-touch "$CLAUDE_JSON_FILE"
+if [ ! -f "$TEMPLATE_CLAUDE_SETTINGS_FILE" ]; then
+  echo "Missing Claude settings template file: $TEMPLATE_CLAUDE_SETTINGS_FILE"
+  exit 1
+fi
 
 docker volume create "$CLAUDE_VOL" >/dev/null
-docker volume create "$NODE_MODULES_VOL" >/dev/null
-docker volume create "$NEXT_VOL" >/dev/null
-docker volume create "$PNPM_STORE_VOL" >/dev/null
+
+set --
+if [ "$BIND_PORT" = true ]; then
+  set -- -p "$HOST_PORT:3000"
+fi
 
 docker run --rm -it \
-  --user 1000:1000 \
+  --name "$CONTAINER_NAME" \
+  --user node:node \
   --security-opt no-new-privileges=false \
   --env-file "$ENV_FILE" \
-  -e PNPM_HOME=/pnpm \
+  -e CLAUDE_SETTINGS_TEMPLATE=/tmp/template_claude_settings.json \
+  "$@" \
   -v "$PROJECT_DIR:/workspace" \
-  -v "$NODE_MODULES_VOL:/workspace/node_modules" \
-  -v "$NEXT_VOL:/workspace/.next" \
-  -v "$PNPM_STORE_VOL:/pnpm/store" \
   -v "$CLAUDE_VOL:/home/node/.claude" \
   -v "$CLAUDE_JSON_FILE:/home/node/.claude.json" \
-  -v "$SKILLS_CACHE:/home/node/.claude/skills:ro" \
+  -v "$TEMPLATE_CLAUDE_SETTINGS_FILE:/tmp/template_claude_settings.json:ro" \
+  -v "$SKILLS_REAL:/home/node/.claude/skills" \
   -w /workspace \
   "$IMAGE_NAME" \
-  bash -lc '
-    set -euo pipefail
-
-    # 配置 git user 和 email（从环境变量读取）
-    if [ -n "${GIT_USER:-}" ]; then
-      git config --global user.name "$GIT_USER"
-      echo "git user.name set to: $GIT_USER"
-    fi
-    if [ -n "${GIT_EMAIL:-}" ]; then
-      git config --global user.email "$GIT_EMAIL"
-      echo "git user.email set to: $GIT_EMAIL"
-    fi
-
-    exec claude --dangerously-skip-permissions --system-prompt "Always use sudo when executing shell commands (e.g. npm install, mkdir, rm, chown, etc.). The workspace directories are owned by root so most file operations require sudo."
-  '
+  claude \
+  --dangerously-skip-permissions \
+  --system-prompt "You are running inside a Docker container with the project mounted at /workspace. When starting a dev server that should be reachable from the host, bind it to 0.0.0.0 and use container port 3000. Use sudo only when it is necessary for permission issues."

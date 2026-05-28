@@ -1,49 +1,52 @@
-FROM node:22-bookworm-slim
+ARG UV_VERSION=latest
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
+
+FROM node:22-bookworm-slim AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SHELL=/usr/bin/zsh
 ENV PNPM_HOME=/home/node/.local/share/pnpm
+ENV NPM_CONFIG_PREFIX=/home/node/.local
+ENV COREPACK_HOME=/home/node/.cache/corepack
 ENV GOROOT=/usr/local/go
 ENV GOPATH=/home/node/go
 ENV PATH=${GOROOT}/bin:${GOPATH}/bin:${PNPM_HOME}:/home/node/.local/bin:${PATH}
 
-# 安装基础工具
+# 安装系统依赖。
+# 新增 apt 软件依赖时加到这个列表里，避免重复 apt-get update。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    zsh \
-    git \
-    curl \
-    wget \
+    build-essential \
     ca-certificates \
-    gnupg \
-    jq \
-    ripgrep \
+    curl \
     fd-find \
+    git \
+    gnupg \
+    htop \
+    jq \
     less \
     nano \
-    vim-tiny \
-    unzip \
-    zip \
-    tar \
-    xz-utils \
-    procps \
-    htop \
-    tree \
     openssh-client \
-    build-essential \
+    procps \
     python3 \
     python3-pip \
     python3-venv \
-    sudo \
+    ripgrep \
     rsync \
+    sudo \
+    tar \
+    tree \
     tzdata \
+    unzip \
+    vim-tiny \
+    wget \
+    xz-utils \
+    zip \
+    zsh \
   && rm -rf /var/lib/apt/lists/*
 
 # 设置时区为 Asia/Shanghai
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-
-# Debian 里的 fd 命令叫 fdfind，补一个 fd 软链接
-RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
 # 安装 Go（官方 tarball，版本比 apt 新）
 ARG GO_VERSION=1.26.0
@@ -62,21 +65,39 @@ RUN echo "node ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/node \
   && chmod 0440 /etc/sudoers.d/node \
   && chsh -s /usr/bin/zsh node
 
+# 安装 uv/uvx（官方镜像里提供静态二进制）
+COPY --from=uv-bin /uv /uvx /usr/local/bin/
+
+# Debian 里的 fd 命令叫 fdfind，补一个 fd 软链接
+RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
+
+RUN mkdir -p \
+    /home/node/.cache/corepack \
+    /home/node/.claude \
+    /home/node/.local/bin \
+    /home/node/.local/share/pnpm \
+    /home/node/go \
+  && chown -R node:node /home/node
+
+FROM base AS runtime
+
+USER node
+WORKDIR /workspace
+
 # 启用 Corepack，并安装 pnpm
-RUN corepack enable \
+RUN corepack enable --install-directory /home/node/.local/bin \
   && corepack prepare pnpm@latest --activate
 
 # 安装 Claude Code
 RUN npm install -g @anthropic-ai/claude-code
 RUN npm i -g @colbymchenry/codegraph
 
+USER root
+
+COPY docker-entrypoint.sh /usr/local/bin/claude-entrypoint
+RUN chmod 0755 /usr/local/bin/claude-entrypoint
+
 USER node
-WORKDIR /workspace
 
-RUN mkdir -p \
-    /home/node/.local/bin \
-    /home/node/.local/share/pnpm \
-    /home/node/.claude \
-    /home/node/go
-
+ENTRYPOINT ["/usr/local/bin/claude-entrypoint"]
 CMD ["zsh"]
